@@ -1,0 +1,127 @@
+---
+title: "Practical Machine Learning, Course Project"
+date: October 22, 2016
+output: html_document
+---
+#### Setup
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(randomForest)
+library(gbm)
+library(MASS)
+library(ggplot2)
+# set seed for reproducibility
+set.seed(2016)
+```
+
+#### Load Data
+```{r}
+# data files must be in the working directory
+pmltraining <- read.csv('pml-training.csv', na.strings = c("NA", "#DIV/0!", ""))
+pmltesting <- read.csv('pml-testing.csv', na.strings = c("NA", "#DIV/0!", ""))
+# after a quick review of these data files, there were numerous entries coded 'NA", or "#DIV/0', or just missing (''), thus the na.strings parameter was added to set all NA's to 'NA'.
+```
+
+### Introduction
+This project evaluates data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants in a weight lifting exercise. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har. The goal is to predict the manner in which they did the exercise. This is the `classe` variable in the training set `pmltraining`. The remaining variables in the data will be used to create a model to predict the activity. Finally, the prediction model will be used to predict 20 different test cases from the test data set `pmltesting`.
+
+### Exploratory Data Analysis
+The exploratory data analysis will start with a comparison of the users and the activity class with the dumbbell:
+```{r}
+ggplot(pmltraining, aes(x = user_name, y = classe, color = classe)) + 
+    geom_bar(stat='identity')
+```
+  
+The two data sets have a large number of variables (160 columns):
+```{r}
+dim(pmltraining); dim(pmltesting)
+```
+  
+Before continuing, we need to deal with the large number of NA values in many of the data set columns. The following script will look at several of the 160 data columns, and then sum the number of 'NA' values in each column:
+```{r}
+str(pmltraining[1:15]); str(pmltraining[146:160])
+# figure out which columns have NA's and count them
+na1 <- apply(pmltraining, 2, function(x) sum(is.na(x)))
+na2 <- apply(pmltesting, 2, function(x) sum(is.na(x)))
+table(na1); table(na2)
+```
+  
+The tables indicate that only 60 columns are free of 'NA' values, and the remaining 100 columns have between 19216 and 19622 'NA' values (out of 19622 observations). The next code will remove the 100 columns of mostly 'NA' values. In addition, the first seven columns will be removed, which contain data not useful to a prediction model, such as the subject name and time stamp data.
+```{r}
+pmlNoNA <- pmltraining[, na1==0]
+pmlNoNA <- pmlNoNA[, 7:60]
+dim(pmlNoNA)
+# perform same cleaning of the pmltesting data set to match pm1NoNA
+pmltestNoNA <- pmltesting[, na1==0]
+pmltestNoNA <- pmltestNoNA[, 7:60]
+dim(pmltestNoNA)
+```
+
+There are still quite a few prediction variables, 53, so we should determine if any have low variability that will not be good predictors. The `nearZeroVar` function from the `caret` package will help identify any such variables as candidates for removal.
+```{r}
+nearZeroVar(pmlNoNA, saveMetrics = TRUE)
+```
+In this case, no variables were found to have low variability, so no further reduction of variables will be performed.
+
+The data set is now reduced to a 'clean' data set with no 'NA' values, with 19622 observations of 53 explanatory variables and the response variable `classe` in the 54th column. The `plmtesting` data set is also reduced to just the 20 'test' observations of 53 explanatory variables for later use, plus the 54th column containing the test id. The 'clean' data set will be further divided into training and testing data sets for use in building the model:
+```{r}
+# split the 'pmlNoNA' data set so that we have a 'training' and 'testing' data set use prior to the final validation using 'pmltestNoNA'
+inTrain <- createDataPartition(y=pmlNoNA$classe, p=0.75, list=FALSE)
+training <- pmlNoNA[inTrain,]
+testing <- pmlNoNA[-inTrain,]
+dim(training);dim(testing)
+```
+
+### Build a Model for Prediction
+Now that the `training` and `testing` data sets are finalized with 53 explanatory variables, several models will be tested for accuracy. Cross validation will be accomplished by using the `trainControl` setting `method = 'cv'`, with the default of 10 k-folds. The first model will try predicting with trees using the `rpart` option:
+```{r}
+# set trainControl to use cross-validation in all models
+tc <- trainControl(method = 'cv')
+# build a model and predict, using method = 'rpart'
+modelrpart <- train(classe ~ ., method = 'rpart', trControl = tc, data = training)
+predrpart <- predict(modelrpart, newdata = testing)
+confusionMatrix(predrpart, testing$classe)$overall[1]
+```
+
+This model resulted in very poor accuracy of 0.525, which is not that much better than random chance. The next model will try linear discriminant analysis with `lda`:
+```{r}
+# build a model and predict with method = 'lda'
+modellda <- train(classe ~ ., method = 'lda', trControl = tc, data = training)
+predlda <- predict(modellda, newdata = testing)
+confusionMatrix(predlda, testing$classe)$overall[1]
+```
+
+The accuracy of this model is better at 0.718. One more model will be fitted, this time using a random forest method:
+```{r}
+# note: using train() and method = 'rf' resulted in a very long run time, so the randomForest package is used instead
+modelrf <- randomForest(classe ~ ., data = training, trControl = tc, ntree=200)
+predrf <- predict(modelrf, newdata = testing)
+confusionMatrix(predrf, testing$classe)$overall[1]
+```
+
+The resulting accuracy is very good at 0.999. This model will be used for further prediction.
+
+### Expected out of sample error
+The out of sample error is shown by the follow table generated from the `confusionMatrix` command. The table shows the reference cases from the `classe` variable in the `testing` data set, against the predicted values using the `modelrf` model on the explanatory variables in `testing`:
+```{r}
+oosError <- confusionMatrix(predrf, testing$classe)
+oosError$overall[1]
+oosError$table
+```
+
+The model resulted in an accuracy of 0.999, and the table confirms only five erroneous predictions out of the 4904 observations in the `testing` data set, or a 0.001 error rate. The following graph also shows the very few errors in the prediction:
+```{r}
+Reference <- (testing$classe)
+Prediction <- (predrf)
+xy <- data.frame(Reference, Prediction)
+ggplot(xy, aes(x = Reference, y = Prediction, color = Reference)) + geom_point() + geom_jitter(width = 0, height = 0.5)
+```
+  
+### Prediction
+Finally, the last step is to use the chosen model, `modelrf`, to predict the `classe` values of the 20 test cases given in the `pmltesting` data set:
+```{r}
+quizPred <-  predict(modelrf, newdata = pmltestNoNA)
+quizPred
+```
+
